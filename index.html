@@ -95,7 +95,7 @@
       loud = Math.min(1, Math.sqrt(sum / wave.length) * 5);
     }
     level += (loud - level) * 0.25;
-    hue = (hue + 0.25 + level * 2) % 360;   // colors drift, faster when loud
+    hue = (hue + 0.06 + level * 0.4) % 360;   // colors drift, faster when loud
 
     const cx = W / 2, cy = H / 2;
     const R = Math.min(W, H) * 0.155;
