@@ -19,6 +19,13 @@
     transition: opacity .3s; pointer-events: none;
   }
   body.talking .hint { opacity: 0; }
+  .volume {
+    position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); top: calc(16px + env(safe-area-inset-top, 0px));
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px;
+    background: rgba(255,255,255,.08); color: var(--ink); cursor: default;
+  }
+  .volume input { width: 96px; accent-color: #e0a888; }
+  .volume output { min-width: 3.2em; font-variant-numeric: tabular-nums; color: var(--muted); }
 </style>
 <script type="importmap">
   { "imports": {
@@ -28,6 +35,10 @@
 </script>
 </head>
 <body>
+<label class="volume" id="volumeBox">Volume
+  <input type="range" id="volume" min="0" max="200" value="100" step="5">
+  <output id="volumeOut">100%</output>
+</label>
 <div class="hint" id="hint">Loading…</div>
 <audio id="voice" src="clip.mp3" preload="auto"></audio>
 
@@ -76,9 +87,56 @@
     box.getCenter(center);
     radius = box.getSize(new THREE.Vector3()).length() / 2;
     model.position.sub(center);
+    model.updateMatrixWorld(true);
+    addHair(faces[0]);
     frame();
     hint.textContent = 'Tap anywhere';
   }, undefined, () => { hint.textContent = 'The face could not load. Refresh to try again.'; });
+
+  // short dark hair: an ellipsoid shell around the skull, cut away below a hairline
+  function hairTexture() {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const g = c.getContext('2d');
+    g.fillStyle = '#241811'; g.fillRect(0, 0, 512, 512);
+    for (let i = 0; i < 9000; i++) {
+      const x = Math.random() * 512, y = Math.random() * 512, len = 8 + Math.random() * 22;
+      const l = 8 + Math.random() * 22;
+      g.strokeStyle = `hsl(24 ${30 + Math.random() * 20}% ${l}%)`;
+      g.lineWidth = 0.6 + Math.random();
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + (Math.random() - 0.5) * 4, y + len); g.stroke();
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(6, 3);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+
+  function addHair(head) {
+    const headBox = new THREE.Box3().setFromObject(head, true);
+    const size = headBox.getSize(new THREE.Vector3());
+    const mid = headBox.getCenter(new THREE.Vector3());
+    const tex = hairTexture();
+    const mat = new THREE.MeshStandardMaterial({ map: tex, bumpMap: tex, bumpScale: 0.6, roughness: 0.8, side: THREE.DoubleSide });
+    mat.onBeforeCompile = s => {
+      s.vertexShader = s.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vUnit;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvUnit = position;');
+      s.fragmentShader = s.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vUnit;')
+        .replace('void main() {', `void main() {
+          // hairline: high on the forehead, down to the ears at the sides, low at the nape
+          float edge = mix(-0.55, HAIR_FRONT, smoothstep(-0.2, 0.75, vUnit.z));
+          edge += 0.006 * sin(atan(vUnit.x, vUnit.z) * 70.0);
+          if (vUnit.y < edge) discard;`.replace('HAIR_FRONT', HAIR.front.toFixed(3)));
+    };
+    const hair = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 64), mat);
+    hair.scale.set(size.x * HAIR.sx, size.y * HAIR.sy, size.z * HAIR.sz);
+    hair.position.set(mid.x, mid.y + size.y * HAIR.dy, mid.z + size.z * HAIR.dz);
+    pivot.add(hair);
+  }
+  const HAIR = { sx: 0.555, sy: 0.52, sz: 0.58, dy: 0.05, dz: 0.03, front: 0.5 };
 
   function frame() {
     const fit = radius / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
@@ -95,7 +153,14 @@
   }
 
   // audio analysis
-  let ctx, analyser, freq;
+  let ctx, analyser, freq, gain;
+  const volume = document.getElementById('volume');
+  const volumeOut = document.getElementById('volumeOut');
+  document.getElementById('volumeBox').addEventListener('click', e => e.stopPropagation());
+  volume.addEventListener('input', () => {
+    volumeOut.textContent = volume.value + '%';
+    if (gain) gain.gain.value = volume.value / 100;
+  });
   function setup() {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
     const src = ctx.createMediaElementSource(audio);
@@ -103,7 +168,9 @@
     analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.5;
     freq = new Uint8Array(analyser.frequencyBinCount);
-    src.connect(analyser); analyser.connect(ctx.destination);
+    gain = ctx.createGain();
+    gain.gain.value = volume.value / 100;
+    src.connect(analyser); analyser.connect(gain); gain.connect(ctx.destination);
   }
   function band(lo, hi) {
     const hz = ctx.sampleRate / analyser.fftSize;
