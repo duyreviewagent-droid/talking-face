@@ -25,6 +25,27 @@
   }
   .volume input { width: 96px; accent-color: var(--accent); }
   .volume output { min-width: 3.2em; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .settings-btn {
+    position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); top: calc(64px + env(safe-area-inset-top, 0px));
+    display: flex; align-items: center; gap: 6px; padding: 8px 14px; border: 0; border-radius: 999px;
+    background: rgba(255,255,255,.08); color: var(--ink); font: inherit; cursor: pointer;
+  }
+  .settings-btn:hover, .settings-btn[aria-expanded="true"] { background: rgba(255,255,255,.16); }
+  .settings-btn:focus-visible, .panel a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .panel {
+    position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); top: calc(112px + env(safe-area-inset-top, 0px));
+    width: min(260px, calc(100vw - 32px)); box-sizing: border-box; padding: 16px; border-radius: 16px;
+    background: rgba(22, 22, 32, .92); border: 1px solid rgba(255,255,255,.1); cursor: default;
+    display: grid; gap: 10px; backdrop-filter: blur(10px);
+  }
+  .panel .credit { font-size: 16px; }
+  .panel .credit b { font-weight: 600; }
+  .panel a {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px;
+    background: rgba(255,255,255,.06); color: var(--ink); text-decoration: none; word-break: break-all;
+  }
+  .panel a:hover { background: rgba(255,255,255,.12); }
+  .yt { flex: none; width: 22px; height: 16px; }
 </style>
 </head>
 <body>
@@ -33,6 +54,17 @@
   <input type="range" id="volume" min="0" max="200" value="100" step="5">
   <output id="volumeOut">100%</output>
 </label>
+<button class="settings-btn" id="settingsBtn" aria-expanded="false" aria-controls="settingsPanel">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+  Settings
+</button>
+<div class="panel" id="settingsPanel" hidden>
+  <div class="credit">Made by <b>Vincent</b></div>
+  <a href="https://www.youtube.com/@VinCentpHan-4949" target="_blank" rel="noopener">
+    <svg class="yt" viewBox="0 0 28 20" aria-hidden="true"><rect width="28" height="20" rx="5" fill="#ff0033"/><path d="M11 5.5v9l7.5-4.5z" fill="#fff"/></svg>
+    @VinCentpHan-4949
+  </a>
+</div>
 <div class="hint" id="hint">Tap anywhere</div>
 <audio id="voice" src="clip.mp3" preload="auto"></audio>
 
@@ -72,6 +104,16 @@
     volumeOut.textContent = volume.value + '%';
     if (gain) gain.gain.value = volume.value / 100;
   });
+
+  const settingsBtn = document.getElementById('settingsBtn');
+  const settingsPanel = document.getElementById('settingsPanel');
+  settingsBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    settingsPanel.hidden = !settingsPanel.hidden;
+    settingsBtn.setAttribute('aria-expanded', String(!settingsPanel.hidden));
+  });
+  settingsPanel.addEventListener('click', e => e.stopPropagation());
+  document.addEventListener('keydown', e => { if (e.target.closest && e.target.closest('button, a, input')) e.stopImmediatePropagation(); }, true);
 
   // ripples spawn on loud moments and drift outward
   const ripples = [];
