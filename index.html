@@ -62,7 +62,8 @@
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
   const key = new THREE.DirectionalLight(0xffe2c8, 1.6); key.position.set(1.5, 2, 3); scene.add(key);
-  const rim = new THREE.DirectionalLight(0x9fb4ff, 0.8); rim.position.set(-3, 1, -2); scene.add(rim);
+  const rim = new THREE.DirectionalLight(0xc8d4ff, 0.6); rim.position.set(-3, 1.5, -2); scene.add(rim);
+  const fill = new THREE.HemisphereLight(0xfff1e6, 0x2a2026, 0.35); scene.add(fill);
 
   const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 100);
   const pivot = new THREE.Group(); scene.add(pivot);
@@ -78,10 +79,15 @@
     const model = gltf.scene.children[0];
     pivot.add(model);
     model.traverse(o => {
+      if (o.isMesh && !o.morphTargetDictionary) o.material.color.set(0xb88a6c);
       if (!o.morphTargetDictionary) return;
       faces.push(o);
-      o.material.color.set(0xe0a888);
-      o.material.roughness = 0.55;
+      const old = o.material;
+      o.material = new THREE.MeshPhysicalMaterial({
+        map: old.map, normalMap: old.normalMap, color: 0xd9a080,
+        roughness: 0.48, sheen: 0.5, sheenColor: 0xff7a5a, sheenRoughness: 0.5,
+        clearcoat: 0.08, clearcoatRoughness: 0.6,
+      });
     });
     const box = new THREE.Box3().setFromObject(model);
     box.getCenter(center);
@@ -93,16 +99,21 @@
     hint.textContent = 'Tap anywhere';
   }, undefined, () => { hint.textContent = 'The face could not load. Refresh to try again.'; });
 
-  // short dark hair: an ellipsoid shell around the skull, cut away below a hairline
+  // black hair: a dark scalp layer cut at the hairline, plus thousands of strands on springs
+  const HAIR = { sx: 0.555, sy: 0.52, sz: 0.58, dy: 0.05, dz: 0.03, front: 0.5 };
+  const hairEdge = u => {
+    const k = Math.min(1, Math.max(0, (u.z + 0.2) / 0.95));
+    return -0.55 + (HAIR.front + 0.55) * k * k * (3 - 2 * k);
+  };
+
   function hairTexture() {
     const c = document.createElement('canvas');
     c.width = 512; c.height = 512;
     const g = c.getContext('2d');
-    g.fillStyle = '#241811'; g.fillRect(0, 0, 512, 512);
+    g.fillStyle = '#0a0a0b'; g.fillRect(0, 0, 512, 512);
     for (let i = 0; i < 9000; i++) {
       const x = Math.random() * 512, y = Math.random() * 512, len = 8 + Math.random() * 22;
-      const l = 8 + Math.random() * 22;
-      g.strokeStyle = `hsl(24 ${30 + Math.random() * 20}% ${l}%)`;
+      g.strokeStyle = `hsl(220 6% ${3 + Math.random() * 14}%)`;
       g.lineWidth = 0.6 + Math.random();
       g.beginPath(); g.moveTo(x, y); g.lineTo(x + (Math.random() - 0.5) * 4, y + len); g.stroke();
     }
@@ -113,30 +124,104 @@
     return t;
   }
 
+  const strands = { geo: null, rest: null, weight: null, phase: null, len: null, sway: new THREE.Vector3(), vel: new THREE.Vector3(), lastRot: new THREE.Euler() };
+
   function addHair(head) {
     const headBox = new THREE.Box3().setFromObject(head, true);
     const size = headBox.getSize(new THREE.Vector3());
     const mid = headBox.getCenter(new THREE.Vector3());
+    const C = new THREE.Vector3(mid.x, mid.y + size.y * HAIR.dy, mid.z + size.z * HAIR.dz);
+    const R = new THREE.Vector3(size.x * HAIR.sx, size.y * HAIR.sy, size.z * HAIR.sz);
+
     const tex = hairTexture();
-    const mat = new THREE.MeshStandardMaterial({ map: tex, bumpMap: tex, bumpScale: 0.6, roughness: 0.8, side: THREE.DoubleSide });
-    mat.onBeforeCompile = s => {
-      s.vertexShader = s.vertexShader
+    const mat = new THREE.MeshStandardMaterial({ map: tex, bumpMap: tex, bumpScale: 0.8, roughness: 0.75, metalness: 0, envMapIntensity: 0.25, side: THREE.DoubleSide });
+    mat.onBeforeCompile = sh => {
+      sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vUnit;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvUnit = position;');
-      s.fragmentShader = s.fragmentShader
+      sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vUnit;')
         .replace('void main() {', `void main() {
-          // hairline: high on the forehead, down to the ears at the sides, low at the nape
-          float edge = mix(-0.55, HAIR_FRONT, smoothstep(-0.2, 0.75, vUnit.z));
+          float edge = mix(-0.55, ${HAIR.front.toFixed(3)}, smoothstep(-0.2, 0.75, vUnit.z));
           edge += 0.006 * sin(atan(vUnit.x, vUnit.z) * 70.0);
-          if (vUnit.y < edge) discard;`.replace('HAIR_FRONT', HAIR.front.toFixed(3)));
+          if (vUnit.y < edge) discard;`);
     };
-    const hair = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 64), mat);
-    hair.scale.set(size.x * HAIR.sx, size.y * HAIR.sy, size.z * HAIR.sz);
-    hair.position.set(mid.x, mid.y + size.y * HAIR.dy, mid.z + size.z * HAIR.dz);
-    pivot.add(hair);
+    const shell = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 64), mat);
+    shell.scale.copy(R);
+    shell.position.copy(C);
+    pivot.add(shell);
+
+    // strands
+    const N = 6000, K = 5;
+    const rest = new Float32Array(N * (K + 1) * 3);
+    const weight = new Float32Array(N * (K + 1));
+    const phase = new Float32Array(N), len = new Float32Array(N);
+    const colors = new Float32Array(N * (K + 1) * 3);
+    const index = [];
+    const u = new THREE.Vector3(), n = new THREE.Vector3(), d = new THREE.Vector3(), p = new THREE.Vector3(), q = new THREE.Vector3();
+    const scale = R.y;
+    for (let i = 0; i < N; i++) {
+      do { u.randomDirection(); } while (u.y < hairEdge(u) + 0.03);
+      const root = C.clone().add(u.clone().multiply(R).multiplyScalar(0.99));
+      n.set(u.x / R.x, u.y / R.y, u.z / R.z).normalize();
+      // comb: forward over the brow at the front, down and back elsewhere
+      const fwd = Math.max(0, (u.z - 0.35) / 0.65);
+      d.set(u.x * 0.15, -1, -0.35 + fwd * 1.3).normalize();
+      d.sub(n.clone().multiplyScalar(d.dot(n))).normalize();
+      const L = scale * (0.16 + Math.random() * 0.14) * (1 + fwd * 0.4);
+      len[i] = L; phase[i] = Math.random() * Math.PI * 2;
+      const shade = 0.003 + Math.random() * 0.012;
+      for (let k = 0; k <= K; k++) {
+        const t = k / K, j = i * (K + 1) + k;
+        p.copy(root).addScaledVector(n, L * 0.25 * t).addScaledVector(d, L * t);
+        p.y -= L * 0.35 * t * t;
+        q.copy(p).sub(C).divide(R);
+        if (q.length() < 1.015) p.copy(C).add(q.setLength(1.015).multiply(R));
+        rest.set([p.x, p.y, p.z], j * 3);
+        weight[j] = t * t;
+        const c = shade + t * 0.012;
+        colors.set([c, c, c * 1.08], j * 3);
+        if (k) index.push(j - 1, j);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(rest.slice(), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.setIndex(index);
+    const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 }));
+    lines.frustumCulled = false;
+    pivot.add(lines);
+    Object.assign(strands, { geo, rest, weight, phase, len, K });
   }
-  const HAIR = { sx: 0.555, sy: 0.52, sz: 0.58, dy: 0.05, dz: 0.03, front: 0.5 };
+
+  // damped spring: hair lags behind head turns, then settles; a light breeze keeps it alive
+  function updateHair(t, dt) {
+    if (!strands.geo) return;
+    const r = pivot.rotation, last = strands.lastRot;
+    const target = new THREE.Vector3(
+      -(r.y - last.y) / dt * 0.25 + Math.sin(r.z) * 0.3,
+      0,
+      -(r.x - last.x) / dt * 0.25);
+    last.copy(r);
+    const { sway, vel } = strands;
+    const acc = target.sub(sway).multiplyScalar(45).addScaledVector(vel, -7);
+    vel.addScaledVector(acc, dt);
+    sway.addScaledVector(vel, dt);
+    const pos = strands.geo.attributes.position.array, { rest, weight, phase, len, K } = strands;
+    for (let i = 0, N = phase.length; i < N; i++) {
+      const L = len[i], ph = phase[i];
+      const wx = sway.x + Math.sin(t * 0.0013 + ph) * 0.04;
+      const wy = sway.y;
+      const wz = sway.z + Math.cos(t * 0.0011 + ph) * 0.03;
+      for (let k = 0; k <= K; k++) {
+        const j = i * (K + 1) + k, w = weight[j] * L, o = j * 3;
+        pos[o] = rest[o] + wx * w;
+        pos[o + 1] = rest[o + 1] + wy * w;
+        pos[o + 2] = rest[o + 2] + wz * w;
+      }
+    }
+    strands.geo.attributes.position.needsUpdate = true;
+  }
 
   function frame() {
     const fit = radius / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
@@ -214,6 +299,8 @@
     pivot.rotation.y = Math.sin(t / 1900) * 0.08 * amp;
     pivot.rotation.x = Math.sin(t / 2600) * 0.03 * amp + m.jaw * 0.05;
     pivot.rotation.z = Math.sin(t / 3100) * 0.02;
+    updateHair(t, Math.min(0.05, (t - (tick.last || t)) / 1000) || 0.016);
+    tick.last = t;
 
     renderer.render(scene, camera);
   }
