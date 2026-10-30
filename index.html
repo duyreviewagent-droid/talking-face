@@ -5,11 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>You Are Cooked</title>
 <style>
-  :root { --bg: #0e0d10; --ink: #efe8e1; --muted: #8f8794; color-scheme: dark; }
+  :root { --bg: #0b0b10; --ink: #efeaf5; --muted: #8b86a0; --accent: #7cf2d4; color-scheme: dark; }
   html, body { height: 100%; margin: 0; }
   body {
-    background: radial-gradient(circle at 50% 40%, #2a2530, var(--bg) 70%) var(--bg);
-    color: var(--ink); font: 15px/1.4 system-ui, sans-serif;
+    background: var(--bg); color: var(--ink); font: 15px/1.4 system-ui, sans-serif;
     overflow: hidden; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
   }
   canvas { display: block; width: 100%; height: 100%; }
@@ -24,290 +23,147 @@
     display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px;
     background: rgba(255,255,255,.08); color: var(--ink); cursor: default;
   }
-  .volume input { width: 96px; accent-color: #e0a888; }
+  .volume input { width: 96px; accent-color: var(--accent); }
   .volume output { min-width: 3.2em; font-variant-numeric: tabular-nums; color: var(--muted); }
 </style>
-<script type="importmap">
-  { "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
-  } }
-</script>
 </head>
 <body>
+<canvas id="c"></canvas>
 <label class="volume" id="volumeBox">Volume
   <input type="range" id="volume" min="0" max="200" value="100" step="5">
   <output id="volumeOut">100%</output>
 </label>
-<div class="hint" id="hint">Loading…</div>
+<div class="hint" id="hint">Tap anywhere</div>
 <audio id="voice" src="clip.mp3" preload="auto"></audio>
 
-<script type="module">
-  import * as THREE from 'three';
-  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-  import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
-  import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
-  import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-
-  const hint = document.getElementById('hint');
+<script>
+  const canvas = document.getElementById('c');
+  const g = canvas.getContext('2d');
   const audio = document.getElementById('voice');
-
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  renderer.setSize(innerWidth, innerHeight);
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  document.body.appendChild(renderer.domElement);
-
-  const scene = new THREE.Scene();
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
-  const key = new THREE.DirectionalLight(0xffe2c8, 1.6); key.position.set(1.5, 2, 3); scene.add(key);
-  const rim = new THREE.DirectionalLight(0xc8d4ff, 0.6); rim.position.set(-3, 1.5, -2); scene.add(rim);
-  const fill = new THREE.HemisphereLight(0xfff1e6, 0x2a2026, 0.35); scene.add(fill);
-
-  const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 100);
-  const pivot = new THREE.Group(); scene.add(pivot);
-
-  const ktx2 = new KTX2Loader()
-    .setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/basis/')
-    .detectSupport(renderer);
-
-  let faces = [];
-  let center = new THREE.Vector3(), radius = 1;
-
-  new GLTFLoader().setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder).load('facecap.glb', gltf => {
-    const model = gltf.scene.children[0];
-    pivot.add(model);
-    model.traverse(o => {
-      if (o.isMesh && !o.morphTargetDictionary) o.material.color.set(0xb88a6c);
-      if (!o.morphTargetDictionary) return;
-      faces.push(o);
-      const old = o.material;
-      o.material = new THREE.MeshPhysicalMaterial({
-        map: old.map, normalMap: old.normalMap, color: 0xd9a080,
-        roughness: 0.48, sheen: 0.5, sheenColor: 0xff7a5a, sheenRoughness: 0.5,
-        clearcoat: 0.08, clearcoatRoughness: 0.6,
-      });
-    });
-    const box = new THREE.Box3().setFromObject(model);
-    box.getCenter(center);
-    radius = box.getSize(new THREE.Vector3()).length() / 2;
-    model.position.sub(center);
-    model.updateMatrixWorld(true);
-    addHair(faces[0]);
-    frame();
-    hint.textContent = 'Tap anywhere';
-  }, undefined, () => { hint.textContent = 'The face could not load. Refresh to try again.'; });
-
-  // black hair: a dark scalp layer cut at the hairline, plus thousands of strands on springs
-  const HAIR = { sx: 0.555, sy: 0.52, sz: 0.58, dy: 0.05, dz: 0.03, front: 0.5 };
-  const hairEdge = u => {
-    const k = Math.min(1, Math.max(0, (u.z + 0.2) / 0.95));
-    return -0.55 + (HAIR.front + 0.55) * k * k * (3 - 2 * k);
-  };
-
-  function hairTexture() {
-    const c = document.createElement('canvas');
-    c.width = 512; c.height = 512;
-    const g = c.getContext('2d');
-    g.fillStyle = '#0a0a0b'; g.fillRect(0, 0, 512, 512);
-    for (let i = 0; i < 9000; i++) {
-      const x = Math.random() * 512, y = Math.random() * 512, len = 8 + Math.random() * 22;
-      g.strokeStyle = `hsl(220 6% ${3 + Math.random() * 14}%)`;
-      g.lineWidth = 0.6 + Math.random();
-      g.beginPath(); g.moveTo(x, y); g.lineTo(x + (Math.random() - 0.5) * 4, y + len); g.stroke();
-    }
-    const t = new THREE.CanvasTexture(c);
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.repeat.set(6, 3);
-    t.colorSpace = THREE.SRGBColorSpace;
-    return t;
-  }
-
-  const strands = { geo: null, rest: null, weight: null, phase: null, len: null, sway: new THREE.Vector3(), vel: new THREE.Vector3(), lastRot: new THREE.Euler() };
-
-  function addHair(head) {
-    const headBox = new THREE.Box3().setFromObject(head, true);
-    const size = headBox.getSize(new THREE.Vector3());
-    const mid = headBox.getCenter(new THREE.Vector3());
-    const C = new THREE.Vector3(mid.x, mid.y + size.y * HAIR.dy, mid.z + size.z * HAIR.dz);
-    const R = new THREE.Vector3(size.x * HAIR.sx, size.y * HAIR.sy, size.z * HAIR.sz);
-
-    const tex = hairTexture();
-    const mat = new THREE.MeshStandardMaterial({ map: tex, bumpMap: tex, bumpScale: 0.8, roughness: 0.75, metalness: 0, envMapIntensity: 0.25, side: THREE.DoubleSide });
-    mat.onBeforeCompile = sh => {
-      sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vUnit;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvUnit = position;');
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vUnit;')
-        .replace('void main() {', `void main() {
-          float edge = mix(-0.55, ${HAIR.front.toFixed(3)}, smoothstep(-0.2, 0.75, vUnit.z));
-          edge += 0.006 * sin(atan(vUnit.x, vUnit.z) * 70.0);
-          if (vUnit.y < edge) discard;`);
-    };
-    const shell = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 64), mat);
-    shell.scale.copy(R);
-    shell.position.copy(C);
-    pivot.add(shell);
-
-    // strands
-    const N = 6000, K = 5;
-    const rest = new Float32Array(N * (K + 1) * 3);
-    const weight = new Float32Array(N * (K + 1));
-    const phase = new Float32Array(N), len = new Float32Array(N);
-    const colors = new Float32Array(N * (K + 1) * 3);
-    const index = [];
-    const u = new THREE.Vector3(), n = new THREE.Vector3(), d = new THREE.Vector3(), p = new THREE.Vector3(), q = new THREE.Vector3();
-    const scale = R.y;
-    for (let i = 0; i < N; i++) {
-      do { u.randomDirection(); } while (u.y < hairEdge(u) + 0.03);
-      const root = C.clone().add(u.clone().multiply(R).multiplyScalar(0.99));
-      n.set(u.x / R.x, u.y / R.y, u.z / R.z).normalize();
-      // comb: forward over the brow at the front, down and back elsewhere
-      const fwd = Math.max(0, (u.z - 0.35) / 0.65);
-      d.set(u.x * 0.15, -1, -0.35 + fwd * 1.3).normalize();
-      d.sub(n.clone().multiplyScalar(d.dot(n))).normalize();
-      const L = scale * (0.16 + Math.random() * 0.14) * (1 + fwd * 0.4);
-      len[i] = L; phase[i] = Math.random() * Math.PI * 2;
-      const shade = 0.003 + Math.random() * 0.012;
-      for (let k = 0; k <= K; k++) {
-        const t = k / K, j = i * (K + 1) + k;
-        p.copy(root).addScaledVector(n, L * 0.25 * t).addScaledVector(d, L * t);
-        p.y -= L * 0.35 * t * t;
-        q.copy(p).sub(C).divide(R);
-        if (q.length() < 1.015) p.copy(C).add(q.setLength(1.015).multiply(R));
-        rest.set([p.x, p.y, p.z], j * 3);
-        weight[j] = t * t;
-        const c = shade + t * 0.012;
-        colors.set([c, c, c * 1.08], j * 3);
-        if (k) index.push(j - 1, j);
-      }
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(rest.slice(), 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.setIndex(index);
-    const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 }));
-    lines.frustumCulled = false;
-    pivot.add(lines);
-    Object.assign(strands, { geo, rest, weight, phase, len, K });
-  }
-
-  // damped spring: hair lags behind head turns, then settles; a light breeze keeps it alive
-  function updateHair(t, dt) {
-    if (!strands.geo) return;
-    const r = pivot.rotation, last = strands.lastRot;
-    const target = new THREE.Vector3(
-      -(r.y - last.y) / dt * 0.25 + Math.sin(r.z) * 0.3,
-      0,
-      -(r.x - last.x) / dt * 0.25);
-    last.copy(r);
-    const { sway, vel } = strands;
-    const acc = target.sub(sway).multiplyScalar(45).addScaledVector(vel, -7);
-    vel.addScaledVector(acc, dt);
-    sway.addScaledVector(vel, dt);
-    const pos = strands.geo.attributes.position.array, { rest, weight, phase, len, K } = strands;
-    for (let i = 0, N = phase.length; i < N; i++) {
-      const L = len[i], ph = phase[i];
-      const wx = sway.x + Math.sin(t * 0.0013 + ph) * 0.04;
-      const wy = sway.y;
-      const wz = sway.z + Math.cos(t * 0.0011 + ph) * 0.03;
-      for (let k = 0; k <= K; k++) {
-        const j = i * (K + 1) + k, w = weight[j] * L, o = j * 3;
-        pos[o] = rest[o] + wx * w;
-        pos[o + 1] = rest[o + 1] + wy * w;
-        pos[o + 2] = rest[o + 2] + wz * w;
-      }
-    }
-    strands.geo.attributes.position.needsUpdate = true;
-  }
-
-  function frame() {
-    const fit = radius / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-    const narrow = camera.aspect < 1 ? 1 / camera.aspect : 1;
-    camera.position.set(0, radius * 0.05, fit * (camera.aspect < 1 ? 0.5 * narrow : 0.85));
-    camera.lookAt(0, 0, 0);
-  }
-
-  function setShape(name, value) {
-    for (const f of faces) {
-      const i = f.morphTargetDictionary[name];
-      if (i !== undefined) f.morphTargetInfluences[i] = value;
-    }
-  }
-
-  // audio analysis
-  let ctx, analyser, freq, gain;
   const volume = document.getElementById('volume');
   const volumeOut = document.getElementById('volumeOut');
-  document.getElementById('volumeBox').addEventListener('click', e => e.stopPropagation());
-  volume.addEventListener('input', () => {
-    volumeOut.textContent = volume.value + '%';
-    if (gain) gain.gain.value = volume.value / 100;
-  });
+  let W, H, dpr;
+
+  function resize() {
+    dpr = Math.min(devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize();
+  addEventListener('resize', resize);
+
+  // audio
+  let ctx, analyser, freq, wave, gain;
   function setup() {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
     const src = ctx.createMediaElementSource(audio);
     analyser = ctx.createAnalyser();
     analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.5;
+    analyser.smoothingTimeConstant = 0.75;
     freq = new Uint8Array(analyser.frequencyBinCount);
+    wave = new Uint8Array(analyser.fftSize);
     gain = ctx.createGain();
     gain.gain.value = volume.value / 100;
     src.connect(analyser); analyser.connect(gain); gain.connect(ctx.destination);
   }
-  function band(lo, hi) {
-    const hz = ctx.sampleRate / analyser.fftSize;
-    let s = 0, n = 0;
-    for (let i = Math.floor(lo / hz); i <= Math.ceil(hi / hz); i++) { s += freq[i]; n++; }
-    return s / n / 255;
-  }
+  document.getElementById('volumeBox').addEventListener('click', e => e.stopPropagation());
+  volume.addEventListener('input', () => {
+    volumeOut.textContent = volume.value + '%';
+    if (gain) gain.gain.value = volume.value / 100;
+  });
 
-  const m = { jaw: 0, funnel: 0, stretch: 0, close: 0, brow: 0 };
-  const ease = (k, target, rate) => { m[k] += (target - m[k]) * rate; };
-  let blinkUntil = 0, nextBlink = performance.now() + 2000;
+  // ripples spawn on loud moments and drift outward
+  const ripples = [];
+  let level = 0, lastSpawn = 0;
+  const BARS = 96;
+  const bars = new Float32Array(BARS);
 
-  function tick(t) {
-    requestAnimationFrame(tick);
+  function draw(t) {
+    requestAnimationFrame(draw);
     const speaking = analyser && !audio.paused;
+    let loud = 0;
     if (speaking) {
       analyser.getByteFrequencyData(freq);
-      const low = band(150, 900), mid = band(900, 2500), high = band(3500, 8000);
-      const loud = Math.max(0, low - 0.25) * 1.9;
-      ease('jaw', Math.min(0.75, loud), 0.5);
-      ease('funnel', Math.min(0.6, Math.max(0, low - mid) * 1.6), 0.35);
-      ease('stretch', Math.min(0.5, high * 1.4), 0.4);
-      ease('brow', Math.min(0.5, loud * 0.6), 0.1);
-    } else {
-      for (const k in m) ease(k, 0, 0.2);
+      analyser.getByteTimeDomainData(wave);
+      let sum = 0;
+      for (const v of wave) { const d = (v - 128) / 128; sum += d * d; }
+      loud = Math.min(1, Math.sqrt(sum / wave.length) * 5);
     }
-    setShape('jawOpen', m.jaw);
-    setShape('mouthLowerDown_L', m.jaw * 0.5); setShape('mouthLowerDown_R', m.jaw * 0.5);
-    setShape('mouthUpperUp_L', m.jaw * 0.25); setShape('mouthUpperUp_R', m.jaw * 0.25);
-    setShape('mouthFunnel', m.funnel);
-    setShape('mouthStretch_L', m.stretch); setShape('mouthStretch_R', m.stretch);
-    setShape('browInnerUp', m.brow);
-    setShape('mouthSmile_L', 0.08); setShape('mouthSmile_R', 0.08);
+    level += (loud - level) * 0.25;
 
-    if (t > nextBlink) { blinkUntil = t + 140; nextBlink = t + 2200 + Math.random() * 3500; }
-    const b = t < blinkUntil ? 1 : 0;
-    setShape('eyeBlink_L', b); setShape('eyeBlink_R', b);
+    const cx = W / 2, cy = H / 2;
+    const R = Math.min(W, H) * 0.17;
+    const breathe = speaking ? 0 : Math.sin(t / 900) * 0.03;
+    const r = R * (1 + level * 0.18 + breathe);
 
-    // idle head motion, a little livelier while talking
-    const amp = speaking ? 1.6 : 1;
-    pivot.rotation.y = Math.sin(t / 1900) * 0.08 * amp;
-    pivot.rotation.x = Math.sin(t / 2600) * 0.03 * amp + m.jaw * 0.05;
-    pivot.rotation.z = Math.sin(t / 3100) * 0.02;
-    updateHair(t, Math.min(0.05, (t - (tick.last || t)) / 1000) || 0.016);
-    tick.last = t;
+    g.clearRect(0, 0, W, H);
 
-    renderer.render(scene, camera);
+    // ripples
+    if (speaking && level > 0.18 && t - lastSpawn > 140) { ripples.push({ born: t, a: level }); lastSpawn = t; }
+    if (!speaking && t - lastSpawn > 1600) { ripples.push({ born: t, a: 0.25 }); lastSpawn = t; }
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const age = (t - ripples[i].born) / 2200;
+      if (age > 1) { ripples.splice(i, 1); continue; }
+      g.beginPath();
+      g.arc(cx, cy, r + age * Math.min(W, H) * 0.42, 0, Math.PI * 2);
+      g.strokeStyle = `rgba(124, 242, 212, ${(1 - age) * 0.45 * ripples[i].a})`;
+      g.lineWidth = 2;
+      g.stroke();
+    }
+
+    // radial frequency bars around the circle
+    for (let i = 0; i < BARS; i++) {
+      const half = i < BARS / 2 ? i : BARS - 1 - i;          // mirror left/right
+      const bin = Math.floor(2 + half * 3.2);
+      const target = speaking ? Math.pow(freq[bin] / 255, 1.6) : 0.04 + 0.03 * Math.sin(t / 600 + i * 0.4);
+      bars[i] += (target - bars[i]) * 0.35;
+      const ang = (i / BARS) * Math.PI * 2 - Math.PI / 2;
+      const len = 6 + bars[i] * R * 1.1;
+      const x1 = cx + Math.cos(ang) * (r + 8), y1 = cy + Math.sin(ang) * (r + 8);
+      const x2 = cx + Math.cos(ang) * (r + 8 + len), y2 = cy + Math.sin(ang) * (r + 8 + len);
+      g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2);
+      g.strokeStyle = `hsla(${165 + bars[i] * 110}, 85%, ${60 + bars[i] * 15}%, ${0.55 + bars[i] * 0.45})`;
+      g.lineWidth = Math.max(2, (Math.PI * 2 * r) / BARS * 0.45);
+      g.lineCap = 'round';
+      g.stroke();
+    }
+
+    // glowing core
+    const glow = g.createRadialGradient(cx, cy, r * 0.2, cx, cy, r * 1.6);
+    glow.addColorStop(0, `rgba(124, 242, 212, ${0.25 + level * 0.35})`);
+    glow.addColorStop(1, 'rgba(124, 242, 212, 0)');
+    g.fillStyle = glow;
+    g.beginPath(); g.arc(cx, cy, r * 1.6, 0, Math.PI * 2); g.fill();
+
+    const core = g.createRadialGradient(cx - r * 0.3, cy - r * 0.35, r * 0.1, cx, cy, r);
+    core.addColorStop(0, '#d9fff4');
+    core.addColorStop(0.45, '#56d8c0');
+    core.addColorStop(1, '#2a5f8f');
+    g.fillStyle = core;
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+
+    // live waveform across the circle
+    g.save();
+    g.beginPath(); g.arc(cx, cy, r * 0.92, 0, Math.PI * 2); g.clip();
+    g.beginPath();
+    const span = r * 1.7;
+    for (let i = 0; i <= 128; i++) {
+      const x = cx - span / 2 + (i / 128) * span;
+      const v = speaking ? (wave[Math.floor(i * wave.length / 129)] - 128) / 128 : Math.sin(t / 400 + i / 10) * 0.03;
+      const y = cy + v * r * 1.4;
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+    }
+    g.strokeStyle = 'rgba(10, 20, 40, 0.75)';
+    g.lineWidth = 3;
+    g.lineJoin = 'round';
+    g.stroke();
+    g.restore();
   }
-  requestAnimationFrame(tick);
+  requestAnimationFrame(draw);
 
   function talk() {
-    if (!faces.length || !audio.paused) return;
+    if (!audio.paused) return;
     if (!ctx) setup();
     ctx.resume();
     audio.currentTime = 0;
@@ -317,13 +173,6 @@
   audio.addEventListener('ended', () => document.body.classList.remove('talking'));
   document.body.addEventListener('click', talk);
   document.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); talk(); } });
-
-  addEventListener('resize', () => {
-    camera.aspect = innerWidth / innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(innerWidth, innerHeight);
-    if (faces.length) frame();
-  });
 </script>
 </body>
 </html>
