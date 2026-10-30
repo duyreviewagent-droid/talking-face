@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>You Are Cooked</title>
+<style>
+  :root { --bg: #0e0d10; --ink: #efe8e1; --muted: #8f8794; color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(circle at 50% 40%, #2a2530, var(--bg) 70%) var(--bg);
+    color: var(--ink); font: 15px/1.4 system-ui, sans-serif;
+    overflow: hidden; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hint {
+    position: fixed; left: 0; right: 0; bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+    text-align: center; letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+    transition: opacity .3s; pointer-events: none;
+  }
+  body.talking .hint { opacity: 0; }
+</style>
+<script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  } }
+</script>
+</head>
+<body>
+<div class="hint" id="hint">Loading…</div>
+<audio id="voice" src="clip.mp3" preload="auto"></audio>
+
+<script type="module">
+  import * as THREE from 'three';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+  import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+  import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+  import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+  const hint = document.getElementById('hint');
+  const audio = document.getElementById('voice');
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+  const key = new THREE.DirectionalLight(0xffe2c8, 1.6); key.position.set(1.5, 2, 3); scene.add(key);
+  const rim = new THREE.DirectionalLight(0x9fb4ff, 0.8); rim.position.set(-3, 1, -2); scene.add(rim);
+
+  const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 100);
+  const pivot = new THREE.Group(); scene.add(pivot);
+
+  const ktx2 = new KTX2Loader()
+    .setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/basis/')
+    .detectSupport(renderer);
+
+  let faces = [];
+  let center = new THREE.Vector3(), radius = 1;
+
+  new GLTFLoader().setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder).load('facecap.glb', gltf => {
+    const model = gltf.scene.children[0];
+    pivot.add(model);
+    model.traverse(o => {
+      if (!o.morphTargetDictionary) return;
+      faces.push(o);
+      o.material.color.set(0xe0a888);
+      o.material.roughness = 0.55;
+    });
+    const box = new THREE.Box3().setFromObject(model);
+    box.getCenter(center);
+    radius = box.getSize(new THREE.Vector3()).length() / 2;
+    model.position.sub(center);
+    frame();
+    hint.textContent = 'Tap anywhere';
+  }, undefined, () => { hint.textContent = 'The face could not load. Refresh to try again.'; });
+
+  function frame() {
+    const fit = radius / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const narrow = camera.aspect < 1 ? 1 / camera.aspect : 1;
+    camera.position.set(0, radius * 0.05, fit * 0.5 * narrow);
+    camera.lookAt(0, 0, 0);
+  }
+
+  function setShape(name, value) {
+    for (const f of faces) {
+      const i = f.morphTargetDictionary[name];
+      if (i !== undefined) f.morphTargetInfluences[i] = value;
+    }
+  }
+
+  // audio analysis
+  let ctx, analyser, freq;
+  function setup() {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ctx.createMediaElementSource(audio);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.5;
+    freq = new Uint8Array(analyser.frequencyBinCount);
+    src.connect(analyser); analyser.connect(ctx.destination);
+  }
+  function band(lo, hi) {
+    const hz = ctx.sampleRate / analyser.fftSize;
+    let s = 0, n = 0;
+    for (let i = Math.floor(lo / hz); i <= Math.ceil(hi / hz); i++) { s += freq[i]; n++; }
+    return s / n / 255;
+  }
+
+  const m = { jaw: 0, funnel: 0, stretch: 0, close: 0, brow: 0 };
+  const ease = (k, target, rate) => { m[k] += (target - m[k]) * rate; };
+  let blinkUntil = 0, nextBlink = performance.now() + 2000;
+
+  function tick(t) {
+    requestAnimationFrame(tick);
+    const speaking = analyser && !audio.paused;
+    if (speaking) {
+      analyser.getByteFrequencyData(freq);
+      const low = band(150, 900), mid = band(900, 2500), high = band(3500, 8000);
+      const loud = Math.max(0, low - 0.25) * 1.9;
+      ease('jaw', Math.min(0.75, loud), 0.5);
+      ease('funnel', Math.min(0.6, Math.max(0, low - mid) * 1.6), 0.35);
+      ease('stretch', Math.min(0.5, high * 1.4), 0.4);
+      ease('brow', Math.min(0.5, loud * 0.6), 0.1);
+    } else {
+      for (const k in m) ease(k, 0, 0.2);
+    }
+    setShape('jawOpen', m.jaw);
+    setShape('mouthLowerDown_L', m.jaw * 0.5); setShape('mouthLowerDown_R', m.jaw * 0.5);
+    setShape('mouthUpperUp_L', m.jaw * 0.25); setShape('mouthUpperUp_R', m.jaw * 0.25);
+    setShape('mouthFunnel', m.funnel);
+    setShape('mouthStretch_L', m.stretch); setShape('mouthStretch_R', m.stretch);
+    setShape('browInnerUp', m.brow);
+    setShape('mouthSmile_L', 0.08); setShape('mouthSmile_R', 0.08);
+
+    if (t > nextBlink) { blinkUntil = t + 140; nextBlink = t + 2200 + Math.random() * 3500; }
+    const b = t < blinkUntil ? 1 : 0;
+    setShape('eyeBlink_L', b); setShape('eyeBlink_R', b);
+
+    // idle head motion, a little livelier while talking
+    const amp = speaking ? 1.6 : 1;
+    pivot.rotation.y = Math.sin(t / 1900) * 0.08 * amp;
+    pivot.rotation.x = Math.sin(t / 2600) * 0.03 * amp + m.jaw * 0.05;
+    pivot.rotation.z = Math.sin(t / 3100) * 0.02;
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(tick);
+
+  function talk() {
+    if (!faces.length || !audio.paused) return;
+    if (!ctx) setup();
+    ctx.resume();
+    audio.currentTime = 0;
+    audio.play();
+    document.body.classList.add('talking');
+  }
+  audio.addEventListener('ended', () => document.body.classList.remove('talking'));
+  document.body.addEventListener('click', talk);
+  document.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); talk(); } });
+
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    if (faces.length) frame();
+  });
+</script>
+</body>
+</html>
